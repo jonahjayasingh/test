@@ -10,7 +10,7 @@ import logging
 from database import get_session
 from models import Product, ProductCategory, User
 from .auth import get_current_user
-
+import os
 router = APIRouter(prefix="/products", tags=["products"])
 
 # Base upload directory
@@ -26,55 +26,85 @@ logging.basicConfig(
 # Create Product (JSON-based, not used in the app but left for flexibility)
 # ----------------------------------------------------------
 @router.post("/", response_model=Product)
-def create_product_json(
-    product: Product,
+def create_product(
+    name: str = Form(...),
+    description: str = Form(...),
+    price: float = Form(...),
+    stock_quantity: int = Form(...),
+    is_active: bool = Form(...),
+    category_id: int = Form(...),
+    image: UploadFile = File(...),
     session: Session = Depends(get_session),
     user=Depends(get_current_user)
 ):
+    # Save the uploaded image to disk
+    image_filename = f"{category_id}_{image.filename}"
+    category = session.exec(select(ProductCategory).where(ProductCategory.id == category_id)).first()
+    
+    user_dir = os.path.join(UPLOAD_DIR, user.username, category.name.lower().replace(' ', '_'))
+    os.makedirs(user_dir, exist_ok=True)
+    
+    image_path = os.path.join(user_dir, image_filename)
+
+    with open(image_path, "wb") as buffer:
+        shutil.copyfileobj(image.file, buffer)
+
+    # Create the product record
+    product = Product(
+        name=name,
+        description=description,
+        price=price,
+        stock_quantity=stock_quantity,
+        is_active=is_active,
+        category_id=category_id,
+        image_path=image_path  # assuming your Product model has this field
+    )
+
     session.add(product)
     session.commit()
     session.refresh(product)
+
     return product
 
 
 # ----------------------------------------------------------
 # List all products
 # ----------------------------------------------------------
-@router.get("/", response_model=List[Product])
+@router.get("/list", response_model=List[Product])
 def list_products(
     request: Request,
     session: Session = Depends(get_session),
     user=Depends(get_current_user)
 ):
-    products = session.exec(select(Product)).all()
+    products = session.exec(select(Product)).all()  
     return products
 
 
 # ----------------------------------------------------------
 # List products by category
 # ----------------------------------------------------------
-@router.get("/{category_id}", response_model=List[Product])
-def list_products_by_category(
-    category_id: int,
+@router.get("/{product_id}", response_model=Product)
+def get_product_details(
+    product_id: int,
     session: Session = Depends(get_session),
     user=Depends(get_current_user)
 ):
-    products = session.exec(
+    product = session.exec( 
         select(Product)
         .join(ProductCategory, Product.category_id == ProductCategory.id)
         .where(
-            ProductCategory.user_id == user.id,
-            ProductCategory.id == category_id
+            Product.id == product_id
         )
-    ).all()
+    ).first()
+    
 
-    if not products:
+    if not product: 
         raise HTTPException(
             status_code=404,
-            detail="No products found for this category and user."
+            detail="No product found for this ID and user."
         )
 
-    return products
+    return product      
 
 
 # ----------------------------------------------------------
@@ -148,7 +178,7 @@ def update_product(
 # ----------------------------------------------------------
 # Delete Product
 # ----------------------------------------------------------
-@router.delete("/{product_id}/", response_model=dict)
+@router.delete("/{product_id}", response_model=dict)
 def delete_product(
     product_id: int,
     session: Session = Depends(get_session),
@@ -182,7 +212,7 @@ def delete_product(
 # ----------------------------------------------------------
 # Create Product (with image upload)
 # ----------------------------------------------------------
-@router.post("/{product_id}/")
+@router.post("/{product_id}")
 def create_product(
     name: str = Form(...),
     description: str = Form(None),

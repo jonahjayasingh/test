@@ -4,7 +4,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from pathlib import Path
 
 from database import init_db
-from routes import auth, users, products, categories
+from routes import auth, users, products, categories, cart
 
 app = FastAPI(title="Shop API", version="1.0.0")
 
@@ -33,3 +33,4 @@ app.include_router(auth.router)
 app.include_router(users.router)
 app.include_router(products.router)
 app.include_router(categories.router)
+app.include_router(cart.router)

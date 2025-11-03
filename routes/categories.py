@@ -1,11 +1,11 @@
 from models import ProductCategory
 from .auth import get_current_user
 from fastapi import APIRouter, Depends, HTTPException
-from sqlmodel import Session, select
+from sqlmodel import Session, delete, select
 from typing import List
 
 from database import get_session
-from models import ProductCategory
+from models import ProductCategory, Product
 from .auth import get_current_user
 
 router = APIRouter(prefix="/categories", tags=["categories"])
@@ -63,7 +63,10 @@ def delete_category(
     session: Session = Depends(get_session),
     user=Depends(get_current_user)
 ):
-    print(category_id)
+    product = session.exec(select(Product).where(Product.category_id == category_id)).first()
+    if product:
+        session.exec(delete(Product).where(Product.category_id == category_id))
+    
     category = session.get(ProductCategory, category_id)
     if not category:
         raise HTTPException(status_code=404, detail="Category not found")
