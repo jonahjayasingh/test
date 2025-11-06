@@ -26,7 +26,15 @@ def create_category(
 
 @router.get("/", response_model=List[ProductCategory])
 def list_categories(session: Session = Depends(get_session), user=Depends(get_current_user)):
-    return session.exec(select(ProductCategory)).all()
+    if not user.is_admin:
+        subquery = select(Product.id).where(Product.category_id == ProductCategory.id)
+
+        categories = session.exec(
+            select(ProductCategory).where(subquery.exists()).order_by(ProductCategory.name)
+        ).all()
+    else:
+        categories = session.exec(select(ProductCategory).where(ProductCategory.user_id == user.id).order_by(ProductCategory.name)).all()
+    return categories
 
 @router.get("/{category_id}", response_model=ProductCategory)
 def read_category(

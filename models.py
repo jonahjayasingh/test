@@ -23,6 +23,7 @@ class User(SQLModel, table=True):
     created_at: datetime = Field(default_factory=datetime.now)
     last_login_at: datetime = Field(default_factory=datetime.now)
 
+
     # Relationships
     categories: List[ProductCategory] = Relationship(back_populates="user")
     cart_items: List["CartItem"] = Relationship(back_populates="user")
@@ -57,23 +58,24 @@ class CartItem(SQLModel, table=True):
     updated_at: datetime = Field(
         sa_column=Column(DateTime, default=datetime.now, onupdate=datetime.now)
     )
-
+    in_order: bool = Field(default=False)
     # Relationships
     user: Optional["User"] = Relationship(back_populates="cart_items")
     product: Optional["Product"] = Relationship(back_populates="cart_items")
+    order: Optional["Order"] = Relationship(back_populates="cart_item")
 
 
 
 class Order(SQLModel, table=True):
     id: int = Field(primary_key=True)
     user_id: int = Field(foreign_key="user.id")
-    cart_items: List["CartItem"] = Relationship(back_populates="order")
+    cart_id: Optional[int] = Field(default=None, foreign_key="cartitem.id")  # <-- add this
     total_price: float = Field(default=0.0)
+    address: str = Field(default="")
     is_paid: bool = Field(default=False)
     order_date: datetime = Field(default_factory=datetime.now)
 
     # Relationships
     user: Optional["User"] = Relationship(back_populates="orders")
+    cart_item: Optional["CartItem"] = Relationship(back_populates="order")
 
-    def calculate_total_price(self):
-        return sum(item.calculate_total_price() for item in self.cart_items)

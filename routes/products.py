@@ -1,21 +1,24 @@
-from fastapi import APIRouter, Depends, HTTPException, UploadFile, File, Form, Request
+from fastapi import (
+    APIRouter, Depends, HTTPException, UploadFile, File, Form, Request, Path
+)
 from sqlmodel import Session, select
 from typing import List
-from pathlib import Path
+from pathlib import Path as FilePath
 import shutil
 from datetime import datetime
-from fastapi.staticfiles import StaticFiles
 import logging
+import os
 
 from database import get_session
 from models import Product, ProductCategory, User
 from .auth import get_current_user
-import os
+
 router = APIRouter(prefix="/products", tags=["products"])
 
 # Base upload directory
-UPLOAD_DIR = Path("static/images")
+UPLOAD_DIR = FilePath("static/images")
 UPLOAD_DIR.mkdir(parents=True, exist_ok=True)
+
 
 logging.basicConfig(
     level=logging.DEBUG,
@@ -23,33 +26,30 @@ logging.basicConfig(
 )
 
 # ----------------------------------------------------------
-# Create Product (JSON-based, not used in the app but left for flexibility)
+# Create Product (with image upload)
 # ----------------------------------------------------------
-@router.post("/", response_model=Product)
+@router.post("/{category_id}", response_model=dict)
 def create_product(
+    category_id: int = Path(...),
     name: str = Form(...),
-    description: str = Form(...),
+    description: str = Form(None),
     price: float = Form(...),
     stock_quantity: int = Form(...),
-    is_active: bool = Form(...),
-    category_id: int = Form(...),
-    image: UploadFile = File(...),
+    is_active: bool = Form(True),
+    file: UploadFile = File(None),
     session: Session = Depends(get_session),
-    user=Depends(get_current_user)
+    user=Depends(get_current_user),
 ):
-    # Save the uploaded image to disk
-    image_filename = f"{category_id}_{image.filename}"
-    category = session.exec(select(ProductCategory).where(ProductCategory.id == category_id)).first()
-    
-    user_dir = os.path.join(UPLOAD_DIR, user.username, category.name.lower().replace(' ', '_'))
-    os.makedirs(user_dir, exist_ok=True)
-    
-    image_path = os.path.join(user_dir, image_filename)
+    """Create a product under a given category, optionally uploading an image."""
 
-    with open(image_path, "wb") as buffer:
-        shutil.copyfileobj(image.file, buffer)
+    # Ensure the category exists
+    category = session.exec(
+        select(ProductCategory).where(ProductCategory.id == category_id)
+    ).first()
+    if not category:
+        raise HTTPException(status_code=404, detail="Category not found")
 
-    # Create the product record
+    # Create product record
     product = Product(
         name=name,
         description=description,
@@ -57,14 +57,34 @@ def create_product(
         stock_quantity=stock_quantity,
         is_active=is_active,
         category_id=category_id,
-        image_path=image_path  # assuming your Product model has this field
+        created_at=datetime.now(),
+        updated_at=datetime.now(),
     )
-
     session.add(product)
     session.commit()
     session.refresh(product)
 
-    return product
+    # Create directory for this user/category
+    category_folder = category.name.lower().replace(" ", "_")
+    user_dir = UPLOAD_DIR / user.username / category_folder
+    user_dir.mkdir(parents=True, exist_ok=True)
+
+    # Handle image upload
+    if file:
+        file_path = user_dir / f"{product.id}_{file.filename}"
+        with file_path.open("wb") as buffer:
+            shutil.copyfileobj(file.file, buffer)
+
+        product.image_path = str(file_path)
+        session.add(product)
+        session.commit()
+        session.refresh(product)
+
+    return {
+        "message": "Product created successfully",
+        "product_id": product.id,
+        "image_path": product.image_path,
+    }
 
 
 # ----------------------------------------------------------
@@ -72,39 +92,47 @@ def create_product(
 # ----------------------------------------------------------
 @router.get("/list", response_model=List[Product])
 def list_products(
-    request: Request,
     session: Session = Depends(get_session),
     user=Depends(get_current_user)
 ):
-    products = session.exec(select(Product)).all()  
-    return products
+    return session.exec(select(Product)).all()
+
+
+# ----------------------------------------------------------
+# Get product details by product_id
+# ----------------------------------------------------------
+@router.get("/details/{product_id}", response_model=Product)
+def get_product_details_by_id(
+    product_id: int,
+    session: Session = Depends(get_session),
+    user=Depends(get_current_user)
+):
+    product = session.get(Product, product_id)
+    if not product:
+        raise HTTPException(status_code=404, detail="Product not found")
+    return product
 
 
 # ----------------------------------------------------------
 # List products by category
 # ----------------------------------------------------------
-@router.get("/{product_id}", response_model=Product)
-def get_product_details(
-    product_id: int,
+@router.get("/{category_id}", response_model=List[Product])
+def get_products_by_category(
+    category_id: int,
     session: Session = Depends(get_session),
     user=Depends(get_current_user)
 ):
-    product = session.exec( 
+    query = (
         select(Product)
         .join(ProductCategory, Product.category_id == ProductCategory.id)
-        .where(
-            Product.id == product_id
-        )
-    ).first()
-    
+        .where(ProductCategory.id == category_id)
+    )
 
-    if not product: 
-        raise HTTPException(
-            status_code=404,
-            detail="No product found for this ID and user."
-        )
+    if user.is_admin:
+        query = query.where(ProductCategory.user_id == user.id)
 
-    return product      
+    products = session.exec(query).all()
+    return products
 
 
 # ----------------------------------------------------------
@@ -129,9 +157,9 @@ def update_product(
 
     # Check ownership
     if db_product.category.user_id != user.id:
-        raise HTTPException(status_code=403, detail="Not authorized to update this product")
+        raise HTTPException(status_code=403, detail="Not authorized")
 
-    # --- Update fields dynamically ---
+    # Update fields
     if name is not None:
         db_product.name = name
     if description is not None:
@@ -145,9 +173,8 @@ def update_product(
     if category_id is not None:
         db_product.category_id = category_id
 
-    # --- Handle image replacement ---
+    # Replace image
     if file:
-        # Remove old image if it exists
         if db_product.image_path:
             old_path = Path(db_product.image_path)
             if old_path.exists():
@@ -156,13 +183,10 @@ def update_product(
                 except Exception as e:
                     logging.warning(f"Failed to delete old image: {e}")
 
-        # Ensure user directory exists
-        user_obj = session.exec(select(User).where(User.id == db_product.category.user_id)).first()
-        user_dir = UPLOAD_DIR / user_obj.username
+        user_dir = UPLOAD_DIR / user.username
         user_dir.mkdir(parents=True, exist_ok=True)
-
-        # Save new image
         new_path = user_dir / f"{db_product.id}_{file.filename}"
+
         with new_path.open("wb") as buffer:
             shutil.copyfileobj(file.file, buffer)
 
@@ -188,14 +212,9 @@ def delete_product(
     if not db_product:
         raise HTTPException(status_code=404, detail="Product not found")
 
-    # Check if the product belongs to the user
     if db_product.category.user_id != user.id:
-        raise HTTPException(
-            status_code=403,
-            detail="Not authorized to delete this product"
-        )
+        raise HTTPException(status_code=403, detail="Not authorized")
 
-    # Delete image file if exists
     if db_product.image_path:
         old_path = Path(db_product.image_path)
         if old_path.exists():
@@ -207,55 +226,3 @@ def delete_product(
     session.delete(db_product)
     session.commit()
     return {"message": "Product deleted successfully"}
-
-
-# ----------------------------------------------------------
-# Create Product (with image upload)
-# ----------------------------------------------------------
-@router.post("/{product_id}")
-def create_product(
-    name: str = Form(...),
-    description: str = Form(None),
-    price: float = Form(...),
-    stock_quantity: int = Form(...),
-    category_id: int = Form(...),
-    file: UploadFile = File(None),
-    session: Session = Depends(get_session),
-    user=Depends(get_current_user),
-):
-    # Create product entry first
-    product = Product(
-        name=name,
-        description=description,
-        price=price,
-        stock_quantity=stock_quantity,
-        category_id=category_id,
-        created_at=datetime.now(),
-        updated_at=datetime.now(),
-    )
-
-    session.add(product)
-    session.commit()
-    session.refresh(product)
-
-    # Get user from category owner
-    user_obj = session.exec(select(User).where(User.id == product.category.user_id)).first()
-    user_dir = UPLOAD_DIR / user_obj.username
-    user_dir.mkdir(parents=True, exist_ok=True)  # ✅ ensure directory exists
-
-    # Save image if provided
-    if file:
-        file_path = user_dir / f"{product.id}_{file.filename}"
-        with file_path.open("wb") as buffer:
-            shutil.copyfileobj(file.file, buffer)
-
-        product.image_path = str(file_path)
-        session.add(product)
-        session.commit()
-        session.refresh(product)
-
-    return {
-        "message": "Product created successfully",
-        "product_id": product.id,
-        "image_path": product.image_path,
-    }

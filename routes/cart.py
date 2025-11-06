@@ -1,6 +1,6 @@
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Request
 from sqlmodel import Session, select
-from models import CartItem, Product, User
+from models import CartItem, Product, User, Order
 from .auth import get_current_user
 from datetime import datetime
 from database import get_session
@@ -72,6 +72,7 @@ def add_to_cart(
     return {
         "message": f"{product.name} added to cart successfully.",
     }
+
 
 
 @router.get("/items/")
